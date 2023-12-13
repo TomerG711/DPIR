@@ -52,7 +52,7 @@ def main():
 
     noise_level_img = 12.75 / 255.0  # default: 0, noise level for LR image
     noise_level_model = noise_level_img  # noise level of model, default 0
-    model_name = 'ircnn_color'  # 'drunet_gray' | 'drunet_color' | 'ircnn_gray' | 'ircnn_color'
+    model_name = 'drunet_color'  # 'drunet_gray' | 'drunet_color' | 'ircnn_gray' | 'ircnn_color'
     testset_name = 'celeba'  # test set,  'set5' | 'srbsd68'
     x8 = True  # default: False, x8 to boost performance
     iter_num = 8  # number of iterations
@@ -69,7 +69,7 @@ def main():
     # load kernel
     # --------------------------------
 
-    kernels = hdf5storage.loadmat(os.path.join('kernels', 'kernels_12.mat'))['kernels']
+    kernels = hdf5storage.loadmat(os.path.join('kernels', 'Levin09.mat'))['kernels']
 
     sf = 1
     task_current = 'deblur'  # 'deblur' for deblurring
@@ -123,12 +123,22 @@ def main():
     test_results_ave = OrderedDict()
     test_results_ave['psnr'] = []  # record average PSNR for each kernel
 
-    for k_index in range(kernels.shape[1]):
+    for k_index in range(1):  # Was: kernels.shape[1]
 
         logger.info('-------k:{:>2d} ---------'.format(k_index))
         test_results = OrderedDict()
         test_results['psnr'] = []
-        k = kernels[0, k_index].astype(np.float64)
+        # k = kernels[0, k_index].astype(np.float64)
+
+        sigma = 10  # TOM: better make argument for kernel type
+        # sigma = 3 #10 # TOM: better make argument for kernel type
+        pdf = lambda x: torch.exp(torch.Tensor([-0.5 * (x / sigma) ** 2]))
+
+        k = torch.Tensor([pdf(-2), pdf(-1), pdf(0), pdf(1), pdf(2)])
+        k = k / k.sum()
+        if k.dim() == 1:
+            k = torch.matmul(k[:,None],k[None,:])/torch.sum(k)**2
+        print(k)
         util.imshow(k) if show_img else None
 
         for idx, img in enumerate(L_paths):
@@ -144,7 +154,7 @@ def main():
             # print(orig_name)
             img_H = util.imread_uint(orig_name, n_channels=n_channels)
             img_H = util.modcrop(img_H, 8)  # modcrop
-            print(img)
+            # print(img)
             # img_L = ndimage.filters.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
             img_L = util.imread_uint(img, n_channels=n_channels)
             img_L = util.modcrop(img_L, 8)  # modcrop
@@ -178,14 +188,14 @@ def main():
             # --------------------------------
 
             for i in range(iter_num):
-
+                # TODO: FFT step is probably redundant. can mosly likely skip it all
                 # --------------------------------
                 # step 1, FFT
                 # --------------------------------
 
                 tau = rhos[i].float().repeat(1, 1, 1, 1)
                 x = sr.data_solution(x, FB, FBC, F2B, FBFy, tau, sf)
-
+                #
                 if 'ircnn' in model_name:
                     current_idx = np.int(np.ceil(sigmas[i].cpu().numpy() * 255. / 2.) - 1)
 
@@ -233,7 +243,8 @@ def main():
 
             if save_LEH:
                 img_L = util.single2uint(img_L)
-                k_v = k / np.max(k) * 1.0
+                print(k)
+                k_v = k / np.max(k[0]) * 1.0
                 k_v = util.single2uint(np.tile(k_v[..., np.newaxis], [1, 1, 3]))
                 k_v = cv2.resize(k_v, (3 * k_v.shape[1], 3 * k_v.shape[0]), interpolation=cv2.INTER_NEAREST)
                 img_I = cv2.resize(img_L, (sf * img_L.shape[1], sf * img_L.shape[0]), interpolation=cv2.INTER_NEAREST)
