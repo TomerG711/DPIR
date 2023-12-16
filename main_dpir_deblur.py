@@ -7,6 +7,7 @@ from datetime import datetime
 from collections import OrderedDict
 import hdf5storage
 from scipy import ndimage
+import lpips
 
 import torch
 
@@ -16,6 +17,9 @@ from utils import utils_model
 from utils import utils_pnp as pnp
 from utils import utils_sisr as sr
 from utils import utils_image as util
+
+lpips_loss_fn = lpips.LPIPS(net='alex')  # You can choose a different network architecture if needed
+lpips_loss_fn.cuda()
 
 """
 Spyder (Python 3.7)
@@ -50,7 +54,7 @@ def main():
     # Preparation
     # ----------------------------------------
 
-    noise_level_img = 12.75 / 255.0  # default: 0, noise level for LR image
+    noise_level_img = 0.0001 / 255.0  # default: 0, noise level for LR image
     noise_level_model = noise_level_img  # noise level of model, default 0
     model_name = 'drunet_color'  # 'drunet_gray' | 'drunet_color' | 'ircnn_gray' | 'ircnn_color'
     testset_name = 'celeba'  # test set,  'set5' | 'srbsd68'
@@ -77,7 +81,7 @@ def main():
     model_zoo = '/opt/dpir/model_zoo'  # fixed
     testsets = 'testsets'  # fixed
     results = '/opt/dpir/images/restored'  # fixed
-    result_name = testset_name + '_' + task_current + '_' + model_name
+    result_name = testset_name + '_' + task_current + '_' + model_name + '_' + str(noise_level_model)
     model_path = os.path.join(model_zoo, model_name + '.pth')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
@@ -122,12 +126,14 @@ def main():
 
     test_results_ave = OrderedDict()
     test_results_ave['psnr'] = []  # record average PSNR for each kernel
+    test_results_ave['lpips'] = []  # record average PSNR for each kernel
 
     for k_index in range(1):  # Was: kernels.shape[1]
 
         logger.info('-------k:{:>2d} ---------'.format(k_index))
         test_results = OrderedDict()
         test_results['psnr'] = []
+        test_results['lpips'] = []
         # k = kernels[0, k_index].astype(np.float64)
 
         sigma = 10  # TOM: better make argument for kernel type
@@ -137,8 +143,8 @@ def main():
         k = torch.Tensor([pdf(-2), pdf(-1), pdf(0), pdf(1), pdf(2)])
         k = k / k.sum()
         if k.dim() == 1:
-            k = torch.matmul(k[:,None],k[None,:])/torch.sum(k)**2
-        print(k)
+            k = torch.matmul(k[:, None], k[None, :]) / torch.sum(k) ** 2
+        # print(k)
         util.imshow(k) if show_img else None
 
         for idx, img in enumerate(L_paths):
@@ -155,15 +161,15 @@ def main():
             img_H = util.imread_uint(orig_name, n_channels=n_channels)
             img_H = util.modcrop(img_H, 8)  # modcrop
             # print(img)
-            # img_L = ndimage.filters.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
-            img_L = util.imread_uint(img, n_channels=n_channels)
+            img_L = ndimage.filters.convolve(img_H, np.expand_dims(k, axis=2), mode='wrap')
+            # img_L = util.imread_uint(img, n_channels=n_channels)
             img_L = util.modcrop(img_L, 8)  # modcrop
             util.imshow(img_L) if show_img else None
             img_L = util.uint2single(img_L)
 
             np.random.seed(seed=0)  # for reproducibility
-            # if noise_level_img > 0:
-            #     img_L += np.random.normal(0, noise_level_img, img_L.shape)  # add AWGN
+            if noise_level_img > 0:
+                img_L += np.random.normal(0, noise_level_img, img_L.shape)  # add AWGN
             #
             # --------------------------------
             # (2) get rhos and sigmas
@@ -188,7 +194,6 @@ def main():
             # --------------------------------
 
             for i in range(iter_num):
-                # TODO: FFT step is probably redundant. can mosly likely skip it all
                 # --------------------------------
                 # step 1, FFT
                 # --------------------------------
@@ -229,6 +234,9 @@ def main():
             # --------------------------------
             # (3) img_E
             # --------------------------------
+            # print("Device of x:", x.cpu().device)
+            # print("Device of img_H_tensor:", torch.from_numpy(img_H.transpose(2, 0, 1)).unsqueeze(0).device)
+            lpips = lpips_loss_fn(x.clamp(0, 1) * 255, torch.from_numpy(img_H.transpose(2, 0, 1)).cuda()).item()
 
             img_E = util.tensor2uint(x)
             if n_channels == 1:
@@ -243,8 +251,8 @@ def main():
 
             if save_LEH:
                 img_L = util.single2uint(img_L)
-                print(k)
-                k_v = k / np.max(k[0]) * 1.0
+                # print(k)
+                k_v = k / np.max(k.numpy()) * 1.0
                 k_v = util.single2uint(np.tile(k_v[..., np.newaxis], [1, 1, 3]))
                 k_v = cv2.resize(k_v, (3 * k_v.shape[1], 3 * k_v.shape[0]), interpolation=cv2.INTER_NEAREST)
                 img_I = cv2.resize(img_L, (sf * img_L.shape[1], sf * img_L.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -260,16 +268,21 @@ def main():
 
             psnr = util.calculate_psnr(img_E, img_H, border=border)  # change with your own border
             test_results['psnr'].append(psnr)
-            logger.info('{:->4d}--> {:>10s} --k:{:>2d} PSNR: {:.2f}dB'.format(idx + 1, img_name + ext, k_index, psnr))
+            test_results['lpips'].append(lpips)
+            logger.info(
+                '{:->4d}--> {:>10s} --k:{:>2d} PSNR: {:.2f}dB, LPIPS: {:.3f}'.format(idx + 1, img_name + ext, k_index,
+                                                                                     psnr, lpips))
 
         # --------------------------------
         # Average PSNR
         # --------------------------------
 
         ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
+        ave_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
         logger.info(
-            '------> Average PSNR of ({}), kernel: ({}) sigma: ({:.2f}): {:.2f} dB'.format(testset_name, k_index,
-                                                                                           noise_level_model, ave_psnr))
+            '------> Average PSNR of ({}), kernel: ({}) sigma: ({:.2f}): {:.2f} dB, Average LPIPS: {:.3f}'.format(
+                testset_name, k_index,
+                noise_level_model, ave_psnr, ave_lpips))
         test_results_ave['psnr'].append(ave_psnr)
 
 
