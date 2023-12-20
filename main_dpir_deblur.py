@@ -17,6 +17,7 @@ from utils import utils_model
 from utils import utils_pnp as pnp
 from utils import utils_sisr as sr
 from utils import utils_image as util
+from motionblur import Kernel
 
 lpips_loss_fn = lpips.LPIPS(net='alex')  # You can choose a different network architecture if needed
 lpips_loss_fn.cuda()
@@ -53,8 +54,9 @@ def main():
     # ----------------------------------------
     # Preparation
     # ----------------------------------------
+    is_motion = True
 
-    noise_level_img = 0.0001 / 255.0  # default: 0, noise level for LR image
+    noise_level_img = 25.5 / 255.0  # default: 0, noise level for LR image
     noise_level_model = noise_level_img  # noise level of model, default 0
     model_name = 'drunet_color'  # 'drunet_gray' | 'drunet_color' | 'ircnn_gray' | 'ircnn_color'
     testset_name = 'celeba'  # test set,  'set5' | 'srbsd68'
@@ -85,7 +87,6 @@ def main():
     model_path = os.path.join(model_zoo, model_name + '.pth')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
-
     # ----------------------------------------
     # L_path, E_path, H_path
     # ----------------------------------------
@@ -126,7 +127,7 @@ def main():
 
     test_results_ave = OrderedDict()
     test_results_ave['psnr'] = []  # record average PSNR for each kernel
-    test_results_ave['lpips'] = []  # record average PSNR for each kernel
+    test_results_ave['lpips'] = []  # record average lpips for each kernel
 
     for k_index in range(1):  # Was: kernels.shape[1]
 
@@ -149,9 +150,17 @@ def main():
 
         for idx, img in enumerate(L_paths):
 
+            if is_motion:
+                k = torch.from_numpy(Kernel(size=(61, 61), intensity=0.5).kernelMatrix)
+                k = k / k.sum()
+                if k.dim() == 1:
+                    k = torch.matmul(k[:, None], k[None, :]) / torch.sum(k) ** 2
+
+
             # --------------------------------
             # (1) get img_L
             # --------------------------------
+
 
             img_name, ext = os.path.splitext(os.path.basename(img))
             # print(img_name)

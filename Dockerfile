@@ -23,5 +23,5 @@ WORKDIR /opt/dpir
 
 #RUN python setup.py develop --no_cuda_ext
 #CMD sleep infinity
-CMD python main_dpir_deblur.py
+CMD python main_dpir_sisr.py
 
